@@ -1,6 +1,13 @@
 /* 后端接口封装。挂在 window.API 上（非 ES module，保证 file:// 下也能加载）。 */
 window.API = (function () {
-  const BASE = 'http://127.0.0.1:8001';
+  // 后端地址：默认本地 8001。部署到其他域名/端口时，在 index.html 的 Vue 之前
+  // 加一行全局赋值即可覆盖（注意：源码里不要出现 script 闭合标签，会截断内联脚本）：
+  //   window.API_BASE = 'https://api.example.com'
+  const DEFAULT_BASE = 'http://127.0.0.1:8001';
+  // 判断用 !== undefined：空字符串是合法的（同源反代时前端应请求相对路径 /api）
+  const BASE = window.API_BASE !== undefined && window.API_BASE !== null
+    ? window.API_BASE
+    : DEFAULT_BASE;
   const TOKEN_KEY = 'todolist.token';
   const USER_KEY = 'todolist.user';
   const REFRESH_AHEAD = 60 * 1000; // 到期前 1 分钟自动续期

@@ -20,6 +20,14 @@ test-dolist/
 │  ├─ migrate_times.py   # 旧库升级：补齐开始/结束/提醒三列（幂等）
 │  ├─ requirements.txt
 │  └─ .env               # 数据库与令牌配置（不进版本库）
+├─ tests/
+│  ├─ smoke.mjs          # 前端冒烟：jsdom + 内存假后端，164 项（无需数据库）
+│  ├─ api_test.py        # 接口测试：直打运行中的后端，19 项
+│  ├─ e2e_real.mjs       # 全栈端到端：jsdom 直连真后端 + MySQL，18 项
+│  ├─ init_db.py         # 按环境变量执行 schema.sql（CI 用，无需 mysql 客户端）
+│  ├─ package.json       # 测试依赖：jsdom
+│  └─ vendor/            # Vue 运行时副本（离线与 CI 一致性）
+├─ .github/workflows/ci.yml   # GitHub Actions：前端冒烟 + 后端接口 + 全栈
 └─ README.md
 ```
 
@@ -115,11 +123,140 @@ python server/migrate_times.py
 
 导入规则：自动跳过首行表头；空行跳过；状态列识别 `是 / true / 1 / yes / 已完成`；字段用双引号包裹，内部逗号与引号按标准 CSV 转义。在线模式下导入会逐条写入数据库。
 
+## 测试
+
+三层，由快到慢：
+
+```bash
+# 1) 前端冒烟：不需要数据库和后端（内置内存假后端）
+cd tests && npm install && npm test        # 164 项
+
+# 2) 接口测试：需要后端在跑
+python server/main.py &
+python tests/api_test.py                  # 19 项
+
+# 3) 全栈端到端：需要后端 + MySQL，jsdom 加载真实页面直连数据库
+cd tests && npm run test:e2e              # 18 项
+```
+
+- 接口地址用 `API_BASE` 覆盖（默认 `http://127.0.0.1:8001`），数据库用 `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME`
+- 建库可用 `python tests/init_db.py`，它读同样的 `DB_*` 变量，不需要本机装 mysql 客户端
+- 冒烟测试用的 Vue 运行时已放进 `tests/vendor/`，离线和 CI 都不用再下载
+
+**GitHub Actions**（`.github/workflows/ci.yml`）在每次 push / PR 自动跑：
+
+| Job | 内容 | 依赖 |
+| --- | --- | --- |
+| 前端冒烟 | `npm test` | 仅 Node |
+| 后端接口 + 全栈 | 建表 → 启动后端 → `api_test.py` → `e2e_real.mjs` | MySQL 8 服务容器 + Python + Node |
+
+## 部署（生产环境）
+
+开发时前后端各跑一个端口，生产建议用 nginx 把两者收在同一个域名下。
+
+### 1. 数据库
+
+```sql
+CREATE DATABASE todolist DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
+-- 不要用 root 给应用连库
+CREATE USER 'todouser'@'localhost' IDENTIFIED BY '换成强密码';
+GRANT SELECT, INSERT, UPDATE, DELETE ON todolist.* TO 'todouser'@'localhost';
+FLUSH PRIVILEGES;
+```
+
+然后建表（二选一）：
+
+```bash
+mysql -u root -p < server/schema.sql
+DB_USER=todouser DB_PASSWORD='强密码' python tests/init_db.py
+```
+
+### 2. 后端
+
+```bash
+cd server
+python -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+
+export DB_USER=todouser DB_PASSWORD='强密码' DB_NAME=todolist
+export JWT_SECRET=$(openssl rand -hex 32)      # 必须换掉默认值
+export CORS_ORIGINS=https://todo.example.com
+export CORS_ALLOW_NULL=0                        # 生产不再放行 file://
+
+uvicorn main:app --host 127.0.0.1 --port 8001 --workers 4
+```
+
+systemd 单元（`/etc/systemd/system/todolist.service`）：
+
+```ini
+[Unit]
+Description=ToDoList API
+After=network.target mysql.service
+
+[Service]
+WorkingDirectory=/var/www/todolist/server
+Environment="DB_USER=todouser" "DB_PASSWORD=强密码" "DB_NAME=todolist"
+Environment="JWT_SECRET=随机长字符串" "CORS_ORIGINS=https://todo.example.com" "CORS_ALLOW_NULL=0"
+ExecStart=/var/www/todolist/server/.venv/bin/uvicorn main:app --host 127.0.0.1 --port 8001 --workers 4
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl enable --now todolist
+```
+
+### 3. 前端 + nginx
+
+前端是纯静态文件，直接放到 `/var/www/todolist` 即可。需要告诉前端 API 在哪——在 `index.html` 里 Vue 之前加一行：
+
+```html
+<script>window.API_BASE = '';</script>
+```
+
+空字符串表示「请求同源的相对路径」，配合下面的反向代理，`/api/*` 会被转发到后端，既没有跨域问题，也不用暴露后端端口。
+
+```nginx
+server {
+    listen 80;
+    server_name todo.example.com;
+    root /var/www/todolist;
+    index index.html;
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+
+    location /api/ {
+        proxy_pass http://127.0.0.1:8001;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+```
+
+前端与 API **不同域**时（比如静态托管在 CDN），把 `window.API_BASE` 写成完整地址 `https://api.example.com`，并确保后端 `CORS_ORIGINS` 包含前端域名。
+
+HTTPS：`sudo certbot --nginx -d todo.example.com`。
+
+### 上线检查清单
+
+- [ ] `JWT_SECRET` 已换成随机长字符串（默认 `dev-secret-change-me` 等于任何人可伪造令牌）
+- [ ] 数据库不使用 root，权限只给 `SELECT/INSERT/UPDATE/DELETE`
+- [ ] `CORS_ORIGINS` 只列生产域名，`CORS_ALLOW_NULL=0`
+- [ ] 后端只监听 `127.0.0.1`，由 nginx 对外，不直接暴露 8001
+- [ ] 定期备份：`mysqldump todolist > backup.sql`
+- [ ] `.env` 未被提交（`git ls-tree -r --name-only origin/main | grep '\.env$'` 应无输出）
+
 ## 维护说明
 
 - `js/api.js` 与 `js/app.js` 都是普通脚本（非 ES module），这样双击 `index.html` 也能加载；改成 `type="module"` 会在 `file://` 下被 CORS 拦截。
-- 前端固定把请求发往 `http://127.0.0.1:8001`，改端口需改 `js/api.js` 顶部的 `BASE`。
-- CORS 白名单在 `server/main.py`，当前放行 `localhost:8000` 与 `file://`（`null` 源）。
+- 前端默认把请求发往 `http://127.0.0.1:8001`。部署到其他地址时**不要改源码**，在 `index.html` 里 Vue 之前加一行 `window.API_BASE = 'https://api.example.com'` 即可（`js/api.js` 会优先读它）。
+- CORS 白名单在 `server/main.py`，默认放行 `localhost:8000` / `127.0.0.1:8000` 与 `file://`（`null` 源）。部署时用环境变量覆盖：`CORS_ORIGINS=https://todo.example.com`（逗号分隔多个）；不想放行 `file://` 设 `CORS_ALLOW_NULL=0`。
 - 后端连库统一 `charset=utf8mb4`，否则中文会变问号。
 - 数据结构：`{ id, text, done, createdAt, startAt, endAt, remindMinutes }`，前端 id 即数据库主键（UUID），新增时可立即渲染，不必等数据库返回。时间字段前端用毫秒时间戳（0 表示未设置），后端存 `DATETIME(3)`。
 - 首页 logo 是内联 SVG（在 `index.html` 的 `.brand` 与 `.auth-brand` 中），与 favicon 同款：蓝色渐变圆角方块内，左侧白色清单卡片 + 右侧白色对勾，语义是「待办 → 完成」。渐变 `#4d7ee0 → #2f5cb4`，勾在加载时有一次描边动画（尊重 `prefers-reduced-motion`）。

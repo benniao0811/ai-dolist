@@ -1,4 +1,5 @@
 """ToDoList 后端：注册/登录（bcrypt + JWT）+ 待办 CRUD。"""
+import os
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -14,10 +15,16 @@ import db
 
 app = FastAPI(title='ToDoList API')
 
-# 前端静态服务默认跑在 8000；'null' 对应 file:// 直接打开的场景
+# 允许的来源：用 CORS_ORIGINS 覆盖（逗号分隔），默认只放行本地开发端口
+# 例：CORS_ORIGINS=https://todo.example.com
+_origins = [o.strip() for o in os.getenv(
+    'CORS_ORIGINS', 'http://localhost:8000,http://127.0.0.1:8000').split(',') if o.strip()]
+if os.getenv('CORS_ALLOW_NULL', '1') == '1':
+    _origins.append('null')  # 'null' 对应 file:// 直接打开的场景
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['http://localhost:8000', 'http://127.0.0.1:8000', 'null'],
+    allow_origins=_origins,
     allow_methods=['*'],
     allow_headers=['*'],
 )

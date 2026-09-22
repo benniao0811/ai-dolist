@@ -1,0 +1,107 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  frontend:
+    name: 前端冒烟（jsdom，mock 后端）
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: tests
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装依赖
+        run: npm install --no-audit --no-fund
+
+      - name: 运行冒烟测试
+        run: npm test
+
+  backend:
+    name: 后端接口 + 全栈（MySQL 8）
+    runs-on: ubuntu-latest
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci_password
+          MYSQL_DATABASE: todolist
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -pci_password"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=20
+
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3306
+      DB_USER: root
+      DB_PASSWORD: ci_password
+      DB_NAME: todolist
+      JWT_SECRET: ci-only-secret-not-for-production
+      JWT_TTL_MINUTES: 10
+      API_BASE: http://127.0.0.1:8001
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装后端依赖
+        run: pip install -r server/requirements.txt
+
+      - name: 安装前端测试依赖
+        working-directory: tests
+        run: npm install --no-audit --no-fund
+
+      - name: 等待 MySQL 就绪
+        run: |
+          for i in $(seq 1 30); do
+            python -c "import socket,sys; s=socket.create_connection(('127.0.0.1',3306),timeout=2); s.close()" \
+              && { echo "MySQL 已就绪"; exit 0; }
+            sleep 2
+          done
+          echo "MySQL 未在预期时间内就绪"; exit 1
+
+      - name: 建库建表
+        run: python tests/init_db.py
+
+      - name: 启动后端
+        run: |
+          cd server
+          python main.py > /tmp/backend.log 2>&1 &
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8001/api/health > /dev/null; then
+              echo "后端已就绪"; exit 0
+            fi
+            sleep 1
+          done
+          echo "后端启动失败，日志如下："; cat /tmp/backend.log; exit 1
+
+      - name: 接口测试
+        run: python tests/api_test.py
+
+      - name: 全栈端到端测试
+        run: node tests/e2e_real.mjs
+
+      - name: 输出后端日志
+        if: failure()
+        run: cat /tmp/backend.log

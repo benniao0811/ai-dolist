@@ -1,0 +1,12 @@
+{
+  "name": "todolist-tests",
+  "private": true,
+  "description": "ToDoList 前端无头测试（jsdom）",
+  "scripts": {
+    "test": "node smoke.mjs",
+    "test:e2e": "node e2e_real.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.1"
+  }
+}
