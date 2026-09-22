@@ -3,8 +3,10 @@
 用法：先启动后端（默认 http://127.0.0.1:8001），再执行本脚本。
 地址可用环境变量 API_BASE 覆盖，例如 CI 中：API_BASE=http://127.0.0.1:8001 python tests/api_test.py
 """
+import base64
 import json
 import os
+import re
 import time
 import urllib.error
 import urllib.request
@@ -33,11 +35,22 @@ def check(name, cond, extra=''):
     print(('PASS' if cond else 'FAIL'), name, extra)
 
 
+def captcha():
+    """注册需要验证码：取一张并从 SVG 里读出字符（验证码图形是文本节点）。"""
+    status, res = call('GET', '/api/captcha')
+    assert status == 200, '获取验证码失败: %s' % status
+    svg = base64.b64decode(res['data']['image'].split(',', 1)[1]).decode('utf-8')
+    return res['data']['id'], ''.join(re.findall(r'<text[^>]*>([^<])</text>', svg))
+
+
 now_ms = int(time.time() * 1000)
 username = 'time_tester_%d' % (now_ms % 100000)
 
-status, res = call('POST', '/api/auth/register', {'username': username, 'password': 'secret123'})
-check('注册测试账号', status == 200, str(status))
+cap_id, cap_code = captcha()
+status, res = call('POST', '/api/auth/register',
+                   {'username': username, 'password': 'secret123',
+                    'captchaId': cap_id, 'captchaCode': cap_code})
+check('注册测试账号（带验证码）', status == 200, str(res.get('error') or status))
 token = res['data']['token']
 
 # 1. 带完整时间新增

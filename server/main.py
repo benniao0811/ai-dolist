@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 import auth
+import captcha
 import db
 
 app = FastAPI(title='ToDoList API')
@@ -115,6 +116,8 @@ def patch_fields(body):
 class Credentials(BaseModel):
     username: str
     password: str
+    captchaId: Optional[str] = None      # 仅注册需要
+    captchaCode: Optional[str] = None    # 仅注册需要
 
 
 class TodoIn(BaseModel):
@@ -140,9 +143,20 @@ def health():
     return ok({'status': 'ok', 'tokenTtlMinutes': auth.TTL_MINUTES})
 
 
+@app.get('/api/captcha')
+def get_captcha():
+    """返回一张新验证码：id 用于回传，image 可直接放进 img 的 src。"""
+    cid, image = captcha.create()
+    return ok({'id': cid, 'image': image, 'ttlMinutes': captcha.TTL_MINUTES})
+
+
 @app.post('/api/auth/register')
 def register(body: Credentials):
+    # 顺序有讲究：格式校验（便宜）→ 验证码（一次性，通过后消耗）→ 查重
     err = auth.check_username(body.username) or auth.check_password(body.password)
+    if err:
+        raise HTTPException(400, err)
+    err = captcha.verify(body.captchaId, body.captchaCode)
     if err:
         raise HTTPException(400, err)
     if db.one('SELECT id FROM users WHERE username=%s', (body.username,)):

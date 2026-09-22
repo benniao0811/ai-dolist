@@ -32,6 +32,17 @@ CREATE TABLE IF NOT EXISTS todos (
   CONSTRAINT fk_todos_user FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+-- 图形验证码（注册时用）：一次性，5 分钟有效，用完即作废
+CREATE TABLE IF NOT EXISTS captchas (
+  id         CHAR(36)     NOT NULL COMMENT 'UUID，返回给前端用于回传',
+  code       VARCHAR(8)   NOT NULL COMMENT '验证码明文（4 位，已去掉易混淆字符）',
+  expires_at DATETIME(3)  NOT NULL,
+  used       TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '已校验作废',
+  created_at DATETIME(3)  NOT NULL,
+  PRIMARY KEY (id),
+  KEY idx_expires (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 -- 已有旧表（无时间字段）升级用，重复执行安全：
 -- ALTER TABLE todos
 --   ADD COLUMN start_at       DATETIME(3)       NULL COMMENT '计划开始时间' AFTER text,

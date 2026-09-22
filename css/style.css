@@ -89,6 +89,21 @@
   .field { display: block; margin-bottom: 12px; }
   .field span { display: block; margin-bottom: 4px; font-size: 13px; color: #5f6368; }
   .field input { width: 100%; }
+  /* 验证码：输入框自适应，图片固定尺寸并给出「点击换一张」的可点暗示 */
+  .captcha-row { display: flex; gap: 8px; align-items: center; }
+  .captcha-row input { flex: 1; width: auto; min-width: 0; letter-spacing: 2px; }
+  .captcha-img {
+    flex: none;
+    width: 108px;
+    height: 40px;
+    display: block;
+    border: 1px solid #d8dbe0;
+    border-radius: 8px;
+    background: #eef2fb;
+    cursor: pointer;
+  }
+  .captcha-img:hover { border-color: #3b6fd4; }
+  .captcha-loading { flex: none; font-size: 13px; color: #9aa0a6; }
   .auth-error { margin: 0 0 10px; font-size: 13px; color: #d93a3a; }
   .btn-block { width: 100%; background: #3b6fd4; border-color: #3b6fd4; color: #fff; }
   .btn-block:hover:not(:disabled) { border-color: #2f5cb4; background: #2f5cb4; }

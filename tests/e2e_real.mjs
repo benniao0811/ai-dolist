@@ -68,11 +68,25 @@ await a.tick(500);
 
 check('真实后端健康检查通过，进入登录页', !!q('.auth'), q('.auth') ? '' : '未显示登录页');
 
+// 真实验证码是 SVG，字符以文本节点存在；测试里直接按渲染顺序读出（相当于替人看图）
+function captchaCodeFrom(dataUri) {
+  const b64 = (dataUri || '').split(',')[1] || '';
+  let svg = '';
+  try { svg = Buffer.from(b64, 'base64').toString('utf8'); } catch { return ''; }
+  return [...svg.matchAll(/<text[^>]*>([^<])<\/text>/g)].map(m => m[1]).join('');
+}
+
 qa('.auth-tabs button')[1].click();          // 切到注册
-await a.tick();
+for (let i = 0; i < 30 && !q('.captcha-img'); i++) await a.tick(100);
+check('注册页加载出验证码图片', !!q('.captcha-img'));
+
+const captchaCode = captchaCodeFrom(q('.captcha-img')?.getAttribute('src') || '');
+check('验证码图片可解析出 4 位字符', captchaCode.length === 4, captchaCode);
+
 const inputs = qa('.auth input');
 for (const el of inputs) {
-  el.value = el.type === 'password' ? PASS : USER;
+  const inCaptchaRow = !!(el.closest && el.closest('.captcha-row'));
+  el.value = el.type === 'password' ? PASS : (inCaptchaRow ? captchaCode : USER);
   el.dispatchEvent(new a.dom.window.Event('input', { bubbles: true }));
 }
 await a.tick();

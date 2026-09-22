@@ -99,7 +99,8 @@ createApp({
       mode: 'local',            // local = 浏览器本地存储；online = MySQL
       user: null,
       authMode: 'login',
-      authForm: { username: '', password: '' },
+      authForm: { username: '', password: '', captcha: '' },
+      captcha: { id: '', image: '' },
       authError: '',
       authBusy: false,
       notice: '',
@@ -193,6 +194,9 @@ createApp({
     function switchAuth(mode) {
       state.authMode = mode;
       state.authError = '';
+      state.authForm.captcha = '';
+      // 切到注册才需要验证码，且每次进入都换一张
+      if (mode === 'register' && !state.captcha.id) loadCaptcha();
     }
 
     async function submitAuth() {
@@ -202,19 +206,38 @@ createApp({
         state.authError = '请填写用户名和密码';
         return;
       }
+      if (state.authMode === 'register' && !state.authForm.captcha.trim()) {
+        state.authError = '请填写右侧图片中的验证码';
+        return;
+      }
       state.authBusy = true;
       state.authError = '';
       try {
         state.user = state.authMode === 'login'
           ? await API.login(username, password)
-          : await API.register(username, password);
+          : await API.register(username, password, state.captcha.id, state.authForm.captcha.trim());
         state.todos = (await API.listTodos()).map(normalize);
         state.authForm.password = '';
+        state.authForm.captcha = '';
         state.notice = '';
       } catch (e) {
         state.authError = e.message || '操作失败';
+        // 验证码无论对错都会被作废，失败一律换一张
+        if (state.authMode === 'register') {
+          state.authForm.captcha = '';
+          loadCaptcha();
+        }
       } finally {
         state.authBusy = false;
+      }
+    }
+
+    async function loadCaptcha() {
+      try {
+        const data = await API.getCaptcha();
+        state.captcha = { id: data.id || '', image: data.image || '' };
+      } catch (e) {
+        state.captcha = { id: '', image: '' };
       }
     }
 
@@ -633,7 +656,7 @@ createApp({
       pageSize: PAGE_SIZE,
       todayKey: dayKey(Date.now()),
       showAuth, online,
-      boot, switchAuth, submitAuth, logout, useLocalMode,
+      boot, switchAuth, submitAuth, logout, useLocalMode, loadCaptcha,
       addTodo, toggleDone, removeTodo, undoDelete, clearDone, startEdit, saveEdit, cancelEdit,
       openQuickEdit, cancelQuickEdit, saveQuickEdit,
       shiftMonth, pickDate, exportTodos, importTodos,

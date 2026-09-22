@@ -51,6 +51,8 @@ function makeBackend() {
   const users = [];
   const todos = [];
   const calls = [];
+  const captchas = {};        // id -> { code, used }
+  let lastCaptchaId = '';     // 最近签发的验证码，供测试取明文
 
   const b64 = o => Buffer.from(JSON.stringify(o)).toString('base64');
   const unb64 = s => { try { return JSON.parse(Buffer.from(s, 'base64').toString()); } catch { return null; } };
@@ -91,6 +93,15 @@ function makeBackend() {
 
     if (p === '/api/health') return ok({ status: 'ok', tokenTtlMinutes: 10 });
 
+    // 验证码：mem 存 { code, used }，暴露给测试读取明文
+    if (p === '/api/captcha' && method === 'GET') {
+      const id = 'cap_' + (Object.keys(captchas).length + 1) + '_' + Math.random().toString(36).slice(2, 7);
+      const code = 'MOCK'.slice(0, 4);
+      captchas[id] = { code, used: false };
+      lastCaptchaId = id;
+      return ok({ id, image: 'data:image/svg+xml;base64,PHN2Zz48L3N2Zz4=', ttlMinutes: 5 });
+    }
+
     if (p === '/api/auth/register' || p === '/api/auth/login') {
       const isReg = p.endsWith('register');
       const username = (body.username || '').trim();
@@ -99,7 +110,17 @@ function makeBackend() {
       if (password.length < 6) return fail(400, '密码至少 6 位');
       let user = users.find(u => u.username === username);
       if (isReg) {
+        // 与真实后端一致：格式 → 验证码（一次性）→ 查重
+        const cap = captchas[body.captchaId];
+        if (!body.captchaId || !body.captchaCode) return fail(400, '请填写验证码');
+        if (!cap) return fail(400, '验证码已失效，请点击图片刷新');
+        if (cap.used) return fail(400, '验证码已使用过，请刷新');
+        if (String(cap.code).toUpperCase() !== String(body.captchaCode).trim().toUpperCase()) {
+          cap.used = true;
+          return fail(400, '验证码不正确');
+        }
         if (user) return fail(409, '该用户名已被注册');
+        cap.used = true;
         user = { id: 'u' + (users.length + 1), username, hash: 'mock:' + password };
         users.push(user);
       } else if (!user || user.hash !== 'mock:' + password) {
@@ -160,7 +181,11 @@ function makeBackend() {
     return fail(404, 'not found');
   }
 
-  return { handle, users, todos, calls };
+  return {
+    handle, users, todos, calls, captchas,
+    captchaId: () => lastCaptchaId,
+    captchaCode: () => (captchas[lastCaptchaId] || {}).code || '',
+  };
 }
 
 // ---------- 构建页面 ----------
@@ -406,20 +431,27 @@ const shared = makeBackend(); // 跨阶段共享，模拟同一个 MySQL 实例
 
   // 切到注册并注册
   qa('.auth-tabs button')[1].click();
-  await tick();
+  await tick(80);
   check('切换到注册页', /注册并登录/.test(q('.auth form button[type=submit]').textContent));
+  check('注册页出现验证码输入框与图片',
+    !!q('.captcha-row input') && !!q('.captcha-img') && /^data:image\/svg/.test(q('.captcha-img').getAttribute('src') || ''));
   app.type('.auth input[type=text]', 'alice');
   app.type('.auth input[type=password]', 'secret123');
+  app.type('.captcha-row input', backend.captchaCode());
   q('.auth form button[type=submit]').click();
   await tick(150);
   check('注册并登录成功，进入待办页', !!q('.todo-list') && !q('.auth'));
   check('顶栏显示用户名', q('.user-name')?.textContent === 'alice', q('.user-name')?.textContent);
   check('注册写入后端用户表', backend.users.length === 1 && backend.users[0].username === 'alice');
 
-  // 重复注册提示
+  // 重复注册提示（先取一张新验证码：注册 alice 时那张已作废）
   const user = backend.users[0];
+  await backend.handle('http://127.0.0.1:8001/api/captcha', { method: 'GET' });
   const dup = await backend.handle('http://127.0.0.1:8001/api/auth/register', {
-    method: 'POST', body: JSON.stringify({ username: 'alice', password: 'secret123' })
+    method: 'POST', body: JSON.stringify({
+      username: 'alice', password: 'secret123',
+      captchaId: backend.captchaId(), captchaCode: backend.captchaCode()
+    })
   });
   check('重复注册返回 409', dup.status === 409);
 
@@ -753,9 +785,10 @@ const shared = makeBackend(); // 跨阶段共享，模拟同一个 MySQL 实例
   await tick(200);
 
   qa('.auth-tabs button')[1].click();
-  await tick();
+  await tick(80);
   app.type('.auth input[type=text]', 'undo_user');
   app.type('.auth input[type=password]', 'secret123');
+  app.type('.captcha-row input', backend.captchaCode());
   q('.auth form button[type=submit]').click();
   await tick(200);
   check('注册并登录成功', !!q('.todo-list'));
@@ -783,6 +816,53 @@ const shared = makeBackend(); // 跨阶段共享，模拟同一个 MySQL 实例
   const realErrors = app.errors.filter(e => !/Not implemented: navigation/.test(e));
   check('在线撤销阶段无 JS 报错', realErrors.length === 0, realErrors.join(' | '));
   app.dom.window.close();
+}
+
+// ================= 阶段 K：注册验证码 =================
+{
+  const app = createDom({ backendUp: true });
+  const { q, qa, tick, backend, dom } = app;
+  await tick(150);
+
+  qa('.auth-tabs button')[1].click();
+  await tick(120);
+  check('注册页显示验证码图片', !!q('.captcha-img'));
+  check('验证码图片用 data URI 渲染', /^data:image\/svg\+xml/.test(q('.captcha-img')?.getAttribute('src') || ''));
+
+  const idBefore = backend.captchaId();
+  q('.captcha-img').click();
+  await tick(120);
+  check('点击图片换一张验证码', backend.captchaId() !== idBefore, `${idBefore} -> ${backend.captchaId()}`);
+
+  // 未填验证码：前端直接拦下，不发请求
+  app.type('.auth input[type=text]', 'capuser');
+  app.type('.auth input[type=password]', 'secret123');
+  q('.auth form button[type=submit]').click();
+  await tick(120);
+  check('未填验证码被前端拦截', /请填写/.test(q('.auth-error')?.textContent || ''), q('.auth-error')?.textContent);
+
+  // 错误验证码：后端拒绝 + 自动换一张 + 清空输入
+  app.type('.captcha-row input', 'WRNG');
+  q('.auth form button[type=submit]').click();
+  await tick(180);
+  check('验证码错误被拒绝', /不正确/.test(q('.auth-error')?.textContent || ''), q('.auth-error')?.textContent);
+  check('失败后自动换新验证码', backend.captchaId() !== idBefore);
+  check('失败后清空验证码输入', q('.captcha-row input').value === '', q('.captcha-row input')?.value);
+
+  // 正确验证码：注册成功
+  app.type('.captcha-row input', backend.captchaCode());
+  q('.auth form button[type=submit]').click();
+  await tick(220);
+  check('验证码正确可注册', !!q('.todo-list') && q('.user-name')?.textContent === 'capuser',
+    q('.auth-error')?.textContent || q('.user-name')?.textContent);
+
+  // 登录不需要验证码
+  q('.user .link').click();
+  await tick(180);
+  qa('.auth-tabs button')[0].click();
+  await tick(120);
+  check('登录页不显示验证码', !q('.captcha-row') && !q('.captcha-img'));
+  dom.window.close();
 }
 
 const failed = results.filter(r => r[0] === 'FAIL');

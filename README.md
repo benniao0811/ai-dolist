@@ -15,15 +15,17 @@ test-dolist/
 ├─ server/
 │  ├─ main.py            # FastAPI：注册/登录/令牌 + 待办 CRUD
 │  ├─ auth.py            # bcrypt 密码哈希 + JWT 签发校验（10 分钟）
+│  ├─ captcha.py         # 注册验证码：SVG 生成 + 存库校验（一次性）
 │  ├─ db.py              # MySQL 连接（utf8mb4）
 │  ├─ schema.sql         # 建库建表
 │  ├─ migrate_times.py   # 旧库升级：补齐开始/结束/提醒三列（幂等）
 │  ├─ requirements.txt
 │  └─ .env               # 数据库与令牌配置（不进版本库）
 ├─ tests/
-│  ├─ smoke.mjs          # 前端冒烟：jsdom + 内存假后端，164 项（无需数据库）
-│  ├─ api_test.py        # 接口测试：直打运行中的后端，19 项
-│  ├─ e2e_real.mjs       # 全栈端到端：jsdom 直连真后端 + MySQL，18 项
+│  ├─ smoke.mjs          # 前端冒烟：jsdom + 内存假后端，174 项（无需数据库）
+│  ├─ api_test.py        # 接口测试：直打运行中的后端，19 项（时间字段）
+│  ├─ captcha_test.py    # 接口测试：注册验证码，10 项
+│  ├─ e2e_real.mjs       # 全栈端到端：jsdom 直连真后端 + MySQL，20 项
 │  ├─ init_db.py         # 按环境变量执行 schema.sql（CI 用，无需 mysql 客户端）
 │  ├─ package.json       # 测试依赖：jsdom
 │  └─ vendor/            # Vue 运行时副本（离线与 CI 一致性）
@@ -47,17 +49,34 @@ python -m http.server 8000
 
 然后访问 http://localhost:8000 ，注册账号后即可使用。
 
-首次使用先建库（只需一次）：
+首次使用先建库：
 
 ```bash
 mysql -u root -p < server/schema.sql
+# 或（不需要 mysql 客户端，读 DB_* 环境变量）
+python tests/init_db.py
 ```
 
-已有旧库（没有时间字段）升级：
+已有旧库升级：
 
 ```bash
-python server/migrate_times.py
+python server/migrate_times.py   # 旧版没有时间字段的库：补 start_at / end_at / remind_minutes
+python tests/init_db.py          # 补建后加的表（如 captchas）
 ```
+
+这两个脚本都只做「补建缺失的表/列」，`CREATE TABLE IF NOT EXISTS` + `ADD COLUMN` 前先查 `information_schema`，**不会 DROP、不会 DELETE，现有数据不受影响**。建议执行前先 `mysqldump todolist > backup.sql` 备份一次。
+
+## 注册验证码
+
+服务端生成 SVG 图形验证码（`server/captcha.py`），配色沿用站点蓝白风格（`#eef2fb` 底 + `#2f5cb4~#4d7ee0` 字符 + 干扰线与噪点，圆角与输入框一致）。
+
+- 4 位字符，已剔除易混淆的 `0/O`、`1/I/L`
+- 存数据库表 `captchas`，5 分钟过期，**校验一次即作废**（因此多 worker 部署也正常）
+- 校验顺序：用户名/密码格式 → 验证码 → 查重。格式错误不消耗验证码，避免用户白填
+- 前端：注册页才会出现验证码行，点击图片换一张；提交失败会自动换新图并清空输入
+- 登录不需要验证码，老用户不受影响
+
+已知取舍：SVG 里字符是文本节点，抗机器识别弱于 PNG。本地自用足够；若要更强防护，可改为 Pillow 生成 PNG（需新增依赖与字体处理），或接入第三方人机校验服务。
 
 ## 账号与安全
 
@@ -66,7 +85,10 @@ python server/migrate_times.py
 | 密码存储 | bcrypt（cost 12），库里只存 60 位哈希，不存明文 |
 | 登录令牌 | JWT（HS256），**有效期 10 分钟** |
 | 自动续期 | 页面打开期间，到期前 1 分钟自动换新令牌；关闭页面或离开超过 10 分钟需重新登录 |
-| 用户名规则 | 3-20 位字母、数字、下划线；密码至少 6 位 |
+| 密码存储 | bcrypt（cost 12），库里只存 60 位哈希，不存明文 |
+| 登录令牌 | JWT（HS256），**有效期 10 分钟** |
+| 注册验证码 | 服务端生成的图形验证码，4 位、5 分钟有效、**一次性**（用过即作废），校验通过前不查重用户名 |
+| 用户名规则 | 3-20 位字母、数字、下划线；密码至少 6 位 | |
 | 越权访问 | 所有待办接口强制 `WHERE user_id = ?`，访问他人数据返回 404（不暴露资源是否存在） |
 
 `.env` 里的 `JWT_SECRET` 请换成随机长字符串，且不要提交到版本库（已在 `.gitignore`）。
@@ -85,7 +107,8 @@ python server/migrate_times.py
 | 方法 | 路径 | 说明 |
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查，前端据此判断是否降级为本地模式 |
-| POST | `/api/auth/register` | 注册并直接登录 |
+| GET | `/api/captcha` | 取一张新验证码，返回 `{ id, image, ttlMinutes }` |
+| POST | `/api/auth/register` | 注册并直接登录，需带 `captchaId` + `captchaCode` |
 | POST | `/api/auth/login` | 登录，返回令牌 |
 | POST | `/api/auth/refresh` | 用未过期的令牌换新令牌 |
 | GET | `/api/todos` | 当前用户全部待办 |
@@ -129,14 +152,15 @@ python server/migrate_times.py
 
 ```bash
 # 1) 前端冒烟：不需要数据库和后端（内置内存假后端）
-cd tests && npm install && npm test        # 164 项
+cd tests && npm install && npm test        # 174 项
 
 # 2) 接口测试：需要后端在跑
 python server/main.py &
-python tests/api_test.py                  # 19 项
+python tests/api_test.py                  # 19 项（时间字段）
+python tests/captcha_test.py              # 10 项（注册验证码）
 
 # 3) 全栈端到端：需要后端 + MySQL，jsdom 加载真实页面直连数据库
-cd tests && npm run test:e2e              # 18 项
+cd tests && npm run test:e2e              # 20 项（自动读取真实验证码完成注册）
 ```
 
 - 接口地址用 `API_BASE` 覆盖（默认 `http://127.0.0.1:8001`），数据库用 `DB_HOST/DB_PORT/DB_USER/DB_PASSWORD/DB_NAME`
@@ -148,7 +172,7 @@ cd tests && npm run test:e2e              # 18 项
 | Job | 内容 | 依赖 |
 | --- | --- | --- |
 | 前端冒烟 | `npm test` | 仅 Node |
-| 后端接口 + 全栈 | 建表 → 启动后端 → `api_test.py` → `e2e_real.mjs` | MySQL 8 服务容器 + Python + Node |
+| 后端接口 + 全栈 | 建表 → 启动后端 → `api_test.py` → `captcha_test.py` → `e2e_real.mjs` | MySQL 8 服务容器 + Python + Node |
 
 ## 部署（生产环境）
 

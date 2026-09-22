@@ -99,6 +99,9 @@ jobs:
       - name: 接口测试
         run: python tests/api_test.py
 
+      - name: 验证码接口测试
+        run: python tests/captcha_test.py
+
       - name: 全栈端到端测试
         run: node tests/e2e_real.mjs
 

@@ -111,12 +111,15 @@ window.API = (function () {
     }
   }
 
-  function authCall(path, username, password) {
-    return request(path, { method: 'POST', body: { username: username, password: password }, auth: false })
-      .then(data => {
-        setSession(data);
-        return data.user;
-      });
+  function authCall(path, username, password, extra) {
+    return request(path, {
+      method: 'POST',
+      body: Object.assign({ username: username, password: password }, extra || {}),
+      auth: false
+    }).then(data => {
+      setSession(data);
+      return data.user;   // 返回用户对象，令牌由 setSession 保存
+    });
   }
 
   function refresh() {
@@ -133,8 +136,11 @@ window.API = (function () {
     onExpired: cb => { onExpired = cb; },
     health: () => request('/api/health', { auth: false, timeout: 3000 }),
     login: (username, password) => authCall('/api/auth/login', username, password),
-    register: (username, password) => authCall('/api/auth/register', username, password),
+    register: (username, password, captchaId, captchaCode) =>
+      authCall('/api/auth/register', username, password, { captchaId, captchaCode }),
     refresh: refresh,
+    // 注册用的图形验证码：{ id, image(data URI), ttlMinutes }
+    getCaptcha: () => request('/api/captcha'),
     listTodos: () => request('/api/todos'),
     createTodo: todo => request('/api/todos', {
       method: 'POST',

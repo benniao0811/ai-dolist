@@ -45,6 +45,25 @@
         <span>密码</span>
         <input type="password" v-model="authForm.password" maxlength="72" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" placeholder="至少 6 位">
       </label>
+      <label v-if="authMode === 'register'" class="field">
+        <span>验证码</span>
+        <div class="captcha-row">
+          <input
+            type="text"
+            v-model="authForm.captcha"
+            maxlength="4"
+            autocomplete="off"
+            placeholder="请输入右侧图片中的字符">
+          <img
+            v-if="captcha.image"
+            class="captcha-img"
+            :src="captcha.image"
+            alt="验证码"
+            title="看不清？点击换一张"
+            @click="loadCaptcha">
+          <span v-else class="captcha-loading">加载中…</span>
+        </div>
+      </label>
       <p v-if="authError" class="auth-error">{{ authError }}</p>
       <button class="btn-block" type="submit" :disabled="authBusy">
         {{ authBusy ? '处理中…' : (authMode === 'login' ? '登录' : '注册并登录') }}
