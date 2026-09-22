@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ToDoList</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 40 40'><defs><linearGradient id='g' x1='0' y1='0' x2='1' y2='1'><stop offset='0' stop-color='%234d7ee0'/><stop offset='1' stop-color='%232f5cb4'/></linearGradient></defs><rect width='40' height='40' rx='12' fill='url(%23g)'/><rect x='7' y='9' width='17' height='22' rx='3.5' fill='white'/><path d='M10.6 14.6h9.8M10.6 19.5h12M10.6 24.4h6.6' stroke='%234d7ee0' stroke-width='2.1' stroke-linecap='round' opacity='.5'/><path d='M26.4 20.6l3.4 3.4 5.6-7.6' fill='none' stroke='white' stroke-width='3.2' stroke-linecap='round' stroke-linejoin='round'/></svg>">
+<link rel="stylesheet" href="css/style.css">
+<script src="https://cdn.jsdelivr.net/npm/vue@3/dist/vue.global.prod.js"></script>
+</head>
+<body>
+<div id="app" v-cloak>
+  <div v-if="booting" class="card booting">正在连接服务…</div>
+
+  <div v-else-if="showAuth" class="card auth">
+    <div class="auth-brand">
+      <svg class="logo logo-lg" viewBox="0 0 40 40" role="img" aria-label="ToDoList 标志">
+        <defs>
+          <linearGradient id="logoBg" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0" stop-color="#4d7ee0"/>
+            <stop offset="1" stop-color="#2f5cb4"/>
+          </linearGradient>
+        </defs>
+        <rect width="40" height="40" rx="12" fill="url(#logoBg)"/>
+        <rect x="7" y="9" width="17" height="22" rx="3.5" fill="#fff"/>
+        <path d="M10.6 14.6h9.8M10.6 19.5h12M10.6 24.4h6.6" stroke="#4d7ee0" stroke-width="2.1" stroke-linecap="round" opacity=".5"/>
+        <path class="logo-tick" d="M26.4 20.6l3.4 3.4 5.6-7.6" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <h1 class="title">ToDo<span class="title-accent">List</span></h1>
+      <p class="auth-sub">登录后待办存入 MySQL，换台设备也能看到</p>
+      <p v-if="notice" class="warn">{{ notice }}</p>
+    </div>
+
+    <div class="auth-tabs">
+      <button :class="{ on: authMode === 'login' }" @click="switchAuth('login')">登录</button>
+      <button :class="{ on: authMode === 'register' }" @click="switchAuth('register')">注册</button>
+    </div>
+
+    <form @submit.prevent="submitAuth">
+      <label class="field">
+        <span>用户名</span>
+        <input type="text" v-model="authForm.username" maxlength="20" autocomplete="username" placeholder="3-20 位字母、数字或下划线">
+      </label>
+      <label class="field">
+        <span>密码</span>
+        <input type="password" v-model="authForm.password" maxlength="72" :autocomplete="authMode === 'login' ? 'current-password' : 'new-password'" placeholder="至少 6 位">
+      </label>
+      <p v-if="authError" class="auth-error">{{ authError }}</p>
+      <button class="btn-block" type="submit" :disabled="authBusy">
+        {{ authBusy ? '处理中…' : (authMode === 'login' ? '登录' : '注册并登录') }}
+      </button>
+    </form>
+
+    <button class="link-btn" @click="useLocalMode">不登录，用本地模式（数据只存在这台浏览器）</button>
+  </div>
+
+  <template v-else>
+    <div class="card">
+      <div class="brand">
+        <svg class="logo" viewBox="0 0 40 40" role="img" aria-label="ToDoList 标志">
+          <defs>
+            <linearGradient id="logoBgMain" x1="0" y1="0" x2="1" y2="1">
+              <stop offset="0" stop-color="#4d7ee0"/>
+              <stop offset="1" stop-color="#2f5cb4"/>
+            </linearGradient>
+          </defs>
+          <rect width="40" height="40" rx="12" fill="url(#logoBgMain)"/>
+          <rect x="7" y="9" width="17" height="22" rx="3.5" fill="#fff"/>
+          <path d="M10.6 14.6h9.8M10.6 19.5h12M10.6 24.4h6.6" stroke="#4d7ee0" stroke-width="2.1" stroke-linecap="round" opacity=".5"/>
+          <path class="logo-tick" d="M26.4 20.6l3.4 3.4 5.6-7.6" fill="none" stroke="#fff" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        <h1 class="title">ToDo<span class="title-accent">List</span></h1>
+        <div v-if="user" class="user">
+          <span class="user-name">{{ user.username }}</span>
+          <button class="link" @click="logout">退出</button>
+        </div>
+      </div>
+
+      <p v-if="notice" class="warn">
+        {{ notice }}
+        <button class="warn-btn" @click="boot">重试</button>
+      </p>
+      <p v-else-if="mode === 'local'" class="warn">
+        本地模式：数据只存在这台浏览器，未写入 MySQL。
+        <button class="warn-btn" @click="boot">重试连接</button>
+      </p>
+      <p v-if="!storageOk" class="warn">当前浏览器不可用本地存储，数据仅在本次会话有效。</p>
+
+      <div class="add-row">
+        <input
+          type="text"
+          v-model="newText"
+          @keydown.enter="addTodo($event)"
+          placeholder="添加一项待办，回车确认"
+          maxlength="200">
+        <button class="btn-add" @click="addTodo()" :disabled="!newText.trim()">添加</button>
+      </div>
+
+      <div class="add-extra">
+        <label class="mini-field">
+          <span>开始时间</span>
+          <input type="datetime-local" v-model="newStart">
+        </label>
+        <label class="mini-field">
+          <span>结束时间</span>
+          <input type="datetime-local" v-model="newEnd">
+        </label>
+        <label class="mini-field">
+          <span>提醒</span>
+          <select v-model="newRemind">
+            <option :value="0">不提醒</option>
+            <option v-for="m in remindOptions" :key="m" :value="m">开始前 {{ m }} 分钟</option>
+          </select>
+        </label>
+      </div>
+
+      <div class="tabs">
+        <button :class="{ on: filter === 'all' }" @click="filter = 'all'">全部 {{ todos.length }}</button>
+        <button :class="{ on: filter === 'active' }" @click="filter = 'active'">进行中 {{ activeCount }}</button>
+        <button :class="{ on: filter === 'done' }" @click="filter = 'done'">已完成 {{ doneCount }}</button>
+      </div>
+
+      <div v-if="selectedDate" class="date-bar">
+        <span>只看 {{ selectedDate }} 创建的待办</span>
+        <button @click="selectedDate = ''">清除</button>
+      </div>
+
+      <transition-group tag="ul" name="list" class="todo-list">
+        <li v-for="todo in pagedTodos" :key="todo.id" class="todo-item"
+            :class="{ done: todo.done, expanding: quickEditId === todo.id }">
+          <input type="checkbox" :checked="todo.done" @change="toggleDone(todo)">
+          <div class="item-main">
+            <input
+              v-if="editingId === todo.id"
+              class="edit-input is-editing"
+              v-model="editText"
+              @keydown.enter="saveEdit($event)"
+              @keydown.esc="cancelEdit"
+              @blur="saveEdit()"
+              maxlength="200">
+            <span v-else class="text" @dblclick="startEdit(todo)">{{ todo.text }}</span>
+
+            <p v-if="timeRange(todo) || todo.remindMinutes" class="item-meta">
+              <span v-if="timeRange(todo)">{{ timeRange(todo) }}</span>
+              <span v-if="todo.remindMinutes" class="remind-tag">提前 {{ todo.remindMinutes }} 分钟提醒</span>
+            </p>
+
+            <div v-if="quickEditId === todo.id" class="quick-edit">
+              <input
+                class="edit-input"
+                v-model="quickForm.text"
+                @keydown.enter="saveQuickEdit(todo)"
+                @keydown.esc="cancelQuickEdit"
+                maxlength="200"
+                placeholder="待办内容">
+              <div class="quick-times">
+                <label class="mini-field">
+                  <span>开始</span>
+                  <input type="datetime-local" v-model="quickForm.start">
+                </label>
+                <label class="mini-field">
+                  <span>结束</span>
+                  <input type="datetime-local" v-model="quickForm.end">
+                </label>
+                <label class="mini-field">
+                  <span>提醒</span>
+                  <select v-model="quickForm.remind">
+                    <option :value="0">不提醒</option>
+                    <option v-for="m in remindOptions" :key="m" :value="m">开始前 {{ m }} 分钟</option>
+                  </select>
+                </label>
+              </div>
+              <div class="quick-actions">
+                <button class="btn-add" @click="saveQuickEdit(todo)">保存</button>
+                <button @click="cancelQuickEdit">取消</button>
+              </div>
+            </div>
+          </div>
+
+          <div class="ops">
+            <button class="edit-btn" @click="openQuickEdit(todo)" title="快捷编辑" aria-label="快捷编辑">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M12 20h9"/>
+                <path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/>
+              </svg>
+            </button>
+            <button class="del" @click="removeTodo(todo.id)" title="删除" aria-label="删除">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18"/>
+                <path d="M8 6V4h8v2"/>
+                <path d="M19 6l-1 14H6L5 6"/>
+                <path d="M10 11v6M14 11v6"/>
+              </svg>
+            </button>
+          </div>
+        </li>
+      </transition-group>
+
+      <p v-if="!filteredTodos.length" class="empty">{{ emptyText }}</p>
+
+      <div v-if="filteredTodos.length > pageSize" class="pager">
+        <button @click="goPage(-1)" :disabled="page <= 1">上一页</button>
+        <span>第 {{ page }} / {{ totalPages }} 页 · 共 {{ filteredTodos.length }} 条</span>
+        <button @click="goPage(1)" :disabled="page >= totalPages">下一页</button>
+      </div>
+
+      <footer class="footer">
+        <span v-if="todos.length">{{ activeCount }} 项未完成</span>
+        <div class="actions">
+          <button class="clear" v-if="todos.length" @click="clearDone" :disabled="!doneCount">清空已完成</button>
+          <button @click="$refs.fileInput.click()">导入</button>
+          <button @click="exportTodos" :disabled="!todos.length">导出</button>
+          <input ref="fileInput" type="file" accept=".csv,text/csv" hidden @change="importTodos">
+        </div>
+      </footer>
+    </div>
+
+    <div class="card calendar">
+      <div class="cal-head">
+        <button @click="shiftMonth(-1)" title="上个月">&lsaquo;</button>
+        <span>{{ viewYear }} 年 {{ viewMonth + 1 }} 月</span>
+        <button @click="shiftMonth(1)" title="下个月">&rsaquo;</button>
+      </div>
+      <div class="cal-week">
+        <span v-for="w in weekNames" :key="w">{{ w }}</span>
+      </div>
+      <div class="cal-grid">
+        <template v-for="(cell, i) in calendar" :key="i">
+          <span v-if="!cell" class="cal-cell pad"></span>
+          <button
+            v-else
+            class="cal-cell"
+            :class="{ has: cell.count, today: cell.key === todayKey, on: cell.key === selectedDate }"
+            :disabled="!cell.count"
+            @click="pickDate(cell)">{{ cell.day }}<i v-if="cell.count">{{ cell.count }}</i></button>
+        </template>
+      </div>
+      <p class="cal-tip">数字为当天创建的待办数，点击日期可筛选（再次点击取消）</p>
+    </div>
+  </template>
+
+  <transition name="undo">
+    <div v-if="undo" class="undo-bar">
+      <span>已删除「{{ undo.todo.text }}」</span>
+      <button class="undo-btn" @click="undoDelete">撤销</button>
+    </div>
+  </transition>
+
+  <transition-group tag="div" name="toast" class="toasts" :class="{ 'with-undo': !!undo }">
+    <div v-for="t in toasts" :key="t.id" class="toast">
+      <div class="toast-head">
+        <span class="toast-title">待办提醒</span>
+        <button class="toast-close" @click="dismissToast(t.id)" title="关闭">&times;</button>
+      </div>
+      <p class="toast-text">{{ t.text }}</p>
+      <p class="toast-meta">{{ t.time }} · {{ t.countdown }}</p>
+    </div>
+  </transition-group>
+</div>
+
+<script src="js/api.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
